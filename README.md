@@ -68,4 +68,3 @@ results/      — output folder (created automatically)
 ```
 
 ## Warning: This is not an official Product Hunt tool. This is a personal project, and Product Hunt may change their website at any time. If that happens, this scraper might stop working or need updates.
-# producthunt-scraper
