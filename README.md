@@ -55,7 +55,7 @@ Each entry looks like this:
   "name": "Cursor",
   "tagline": "The AI Code Editor",
   "productHuntUrl": "https://www.producthunt.com/products/cursor",
-  "websiteUrl": "https://cursor.com/?ref=producthunt"
+  "url": "https://cursor.com/?ref=producthunt"
 }
 ```
 

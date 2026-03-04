@@ -10,7 +10,7 @@ export interface ProductResult {
   tagline: string;
   description: string | null;
   productHuntUrl: string;
-  websiteUrl: string | null;
+  url: string | null;
 }
 
 interface ProductStub {
@@ -65,7 +65,7 @@ function buildPageUrl(categoryUrl: string, pageNum: number): string {
 }
 
 interface ProductPageData {
-  websiteUrl: string | null;
+  url: string | null;
   description: string | null;
 }
 
@@ -79,7 +79,7 @@ async function scrapeProductPage(
     await page.waitForSelector('a[data-test="visit-website-button"]', {
       timeout: 20000,
     });
-    const websiteUrl = await page.$eval(
+    const url = await page.$eval(
       'a[data-test="visit-website-button"]',
       (el) => el.getAttribute("href")
     );
@@ -87,10 +87,10 @@ async function scrapeProductPage(
       'meta[name="description"]',
       (el) => el.getAttribute("content")
     ).catch(() => null);
-    return { websiteUrl: websiteUrl ?? null, description };
+    return { url: url ?? null, description };
   } catch {
     console.warn(`  [warn] Could not fully scrape /products/${slug}`);
-    return { websiteUrl: null, description: null };
+    return { url: null, description: null };
   }
 }
 
@@ -164,15 +164,15 @@ export async function scrapeCategory(
       console.log(
         `[${i + 1}/${allStubs.length}] ${stub.name} → /products/${stub.slug}`
       );
-      const { websiteUrl, description } = await scrapeProductPage(productPage, stub.slug);
-      console.log(`  website: ${websiteUrl ?? "(not found)"}`);
+      const { url, description } = await scrapeProductPage(productPage, stub.slug);
+      console.log(`  website: ${url ?? "(not found)"}`);
 
       results.push({
         name: stub.name,
         tagline: stub.tagline,
         description,
         productHuntUrl: `${BASE_URL}/products/${stub.slug}`,
-        websiteUrl,
+        url,
       });
     }
 
