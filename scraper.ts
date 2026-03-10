@@ -1,9 +1,16 @@
-import puppeteer, { type Browser, type Page } from "puppeteer";
+import puppeteer from "puppeteer-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import type { Browser, Page } from "puppeteer";
 import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 
 const BASE_URL = "https://www.producthunt.com";
 const RESULTS_DIR = "results";
+
+export const CLOUDFLARE_HEADLESS_ERROR_CODE =
+  "CLOUDFLARE_CHALLENGE_IN_HEADLESS";
+
+puppeteer.use(StealthPlugin());
 
 export interface ProductResult {
   name: string;
@@ -19,8 +26,124 @@ interface ProductStub {
   slug: string;
 }
 
-async function waitForProducts(page: Page): Promise<void> {
-  await page.waitForSelector('[data-test^="product:"]', { timeout: 30000 });
+export interface ScrapeCategoryOptions {
+  headless: boolean;
+  maxProducts?: number;
+}
+
+async function configurePage(page: Page): Promise<void> {
+  await page.setViewport({ width: 1280, height: 900 });
+  await page.setUserAgent(
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  );
+  await page.setExtraHTTPHeaders({
+    "Accept-Language": "en-US,en;q=0.9",
+  });
+  await page.emulateTimezone("America/Los_Angeles");
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(navigator, "language", {
+      get() {
+        return "en-US";
+      },
+    });
+    Object.defineProperty(navigator, "languages", {
+      get() {
+        return ["en-US", "en"];
+      },
+    });
+  });
+}
+
+async function isCloudflareChallenge(page: Page): Promise<boolean> {
+  const title = await page.title().catch(() => "");
+  if (
+    title.includes("Just a moment") ||
+    title.includes("Checking your browser") ||
+    title.includes("Performing security verification")
+  ) {
+    return true;
+  }
+
+  const html = await page.content().catch(() => "");
+  if (
+    html.includes("cf-turnstile-response") ||
+    html.includes("challenges.cloudflare.com/turnstile") ||
+    html.includes("cf-chl-widget")
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+async function waitForUserToSolveChallenge(context: string): Promise<void> {
+  console.warn(
+    `\n[cloudflare] Detected Cloudflare security verification while ${context}.`
+  );
+  console.warn(
+    "[cloudflare] Please complete the verification in the browser window, then press ENTER here to continue..."
+  );
+
+  await new Promise<void>((resolve) => {
+    process.stdin.resume();
+    process.stdin.once("data", () => {
+      resolve();
+    });
+  });
+}
+
+async function handleCloudflareIfPresent(
+  page: Page,
+  context: string,
+  headless: boolean
+): Promise<void> {
+  if (!(await isCloudflareChallenge(page))) return;
+
+  if (headless) {
+    console.error(
+      `\n[cloudflare] Cloudflare challenge page detected while ${context} in headless mode.`
+    );
+    console.error(
+      "[cloudflare] Automatically switching to a visible browser window to let you solve the challenge."
+    );
+    const err = new Error("Cloudflare challenge detected in headless mode.");
+    // @ts-expect-error attach code for caller to inspect
+    err.code = CLOUDFLARE_HEADLESS_ERROR_CODE;
+    throw err;
+  }
+
+  await waitForUserToSolveChallenge(context);
+
+  if (await isCloudflareChallenge(page)) {
+    throw new Error(
+      "Cloudflare challenge still present after manual verification."
+    );
+  }
+}
+
+async function waitForProducts(
+  page: Page,
+  options: {
+    headless: boolean;
+  }
+): Promise<void> {
+  try {
+    await page.waitForSelector('[data-test^="product:"]', { timeout: 30000 });
+  } catch (error) {
+    await handleCloudflareIfPresent(page, "loading the product list", options.headless);
+    try {
+      const html = await page.content();
+      mkdirSync(RESULTS_DIR, { recursive: true });
+      const outPath = join(RESULTS_DIR, "error_response.html");
+      writeFileSync(outPath, html, "utf8");
+      console.error(
+        `Saved error page HTML to ${outPath} after waitForSelector failure.`
+      );
+    } catch (innerError) {
+      console.error("Failed to save error response HTML:", innerError);
+    }
+    throw error;
+  }
 }
 
 async function extractProductStubs(page: Page): Promise<ProductStub[]> {
@@ -71,11 +194,19 @@ interface ProductPageData {
 
 async function scrapeProductPage(
   page: Page,
-  slug: string
+  slug: string,
+  options: {
+    headless: boolean;
+  }
 ): Promise<ProductPageData> {
   const productUrl = `${BASE_URL}/products/${slug}`;
   try {
     await page.goto(productUrl, { waitUntil: "domcontentloaded" });
+    await handleCloudflareIfPresent(
+      page,
+      `visiting product page /products/${slug}`,
+      options.headless
+    );
     await page.waitForSelector('a[data-test="visit-website-button"]', {
       timeout: 20000,
     });
@@ -96,9 +227,7 @@ async function scrapeProductPage(
 
 export async function scrapeCategory(
   categoryUrl: string,
-  options: {
-    headless: boolean;
-  }
+  options: ScrapeCategoryOptions
 ): Promise<ProductResult[]> {
   console.log(`\nScraping category: ${categoryUrl}\n`);
 
@@ -108,16 +237,20 @@ export async function scrapeCategory(
   });
 
   try {
+    const maxProducts = options.maxProducts ?? Number.POSITIVE_INFINITY;
+
     const categoryPage = await browser.newPage();
-    await categoryPage.setViewport({ width: 1280, height: 900 });
-    await categoryPage.setUserAgent(
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    );
+    await configurePage(categoryPage);
 
     const page1Url = buildPageUrl(categoryUrl, 1);
     console.log(`[1/1] Navigating to page 1: ${page1Url}`);
     await categoryPage.goto(page1Url, { waitUntil: "domcontentloaded" });
-    await waitForProducts(categoryPage);
+    await handleCloudflareIfPresent(
+      categoryPage,
+      "loading category page 1",
+      options.headless
+    );
+    await waitForProducts(categoryPage, { headless: options.headless });
 
     const totalPages = await detectTotalPages(categoryPage);
     console.log(`Detected ${totalPages} page(s) of products.\n`);
@@ -127,6 +260,9 @@ export async function scrapeCategory(
 
     const addStubs = (stubs: ProductStub[]) => {
       for (const stub of stubs) {
+        if (allStubs.length >= maxProducts) {
+          return;
+        }
         if (stub.slug && !seen.has(stub.slug)) {
           seen.add(stub.slug);
           allStubs.push(stub);
@@ -137,14 +273,29 @@ export async function scrapeCategory(
     addStubs(await extractProductStubs(categoryPage));
     console.log(`  Page 1: found ${allStubs.length} products so far.`);
 
-    for (let p = 2; p <= totalPages; p++) {
-      const pageUrl = buildPageUrl(categoryUrl, p);
-      console.log(`[${p}/${totalPages}] Navigating to: ${pageUrl}`);
-      await categoryPage.goto(pageUrl, { waitUntil: "domcontentloaded" });
-      await waitForProducts(categoryPage);
-      const stubs = await extractProductStubs(categoryPage);
-      addStubs(stubs);
-      console.log(`  Page ${p}: ${allStubs.length} unique products accumulated.`);
+    if (allStubs.length < maxProducts) {
+      for (let p = 2; p <= totalPages; p++) {
+        const pageUrl = buildPageUrl(categoryUrl, p);
+        console.log(`[${p}/${totalPages}] Navigating to: ${pageUrl}`);
+        await categoryPage.goto(pageUrl, { waitUntil: "domcontentloaded" });
+        await handleCloudflareIfPresent(
+          categoryPage,
+          `loading category page ${p}`,
+          options.headless
+        );
+        await waitForProducts(categoryPage, { headless: options.headless });
+        const stubs = await extractProductStubs(categoryPage);
+        addStubs(stubs);
+        console.log(
+          `  Page ${p}: ${allStubs.length} unique products accumulated.`
+        );
+        if (allStubs.length >= maxProducts) {
+          console.log(
+            `  Reached maxProducts limit (${maxProducts}); stopping page traversal.`
+          );
+          break;
+        }
+      }
     }
 
     await categoryPage.close();
@@ -152,19 +303,19 @@ export async function scrapeCategory(
     console.log("Now visiting each product page to get website URL...\n");
 
     const productPage = await browser.newPage();
-    await productPage.setViewport({ width: 1280, height: 900 });
-    await productPage.setUserAgent(
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    );
+    await configurePage(productPage);
 
     const results: ProductResult[] = [];
+    const limit = Math.min(allStubs.length, maxProducts);
 
-    for (let i = 0; i < allStubs.length; i++) {
+    for (let i = 0; i < limit; i++) {
       const stub = allStubs[i]!;
       console.log(
-        `[${i + 1}/${allStubs.length}] ${stub.name} → /products/${stub.slug}`
+        `[${i + 1}/${limit}] ${stub.name} → /products/${stub.slug}`
       );
-      const { url, description } = await scrapeProductPage(productPage, stub.slug);
+      const { url, description } = await scrapeProductPage(productPage, stub.slug, {
+        headless: options.headless,
+      });
       console.log(`  website: ${url ?? "(not found)"}`);
 
       results.push({

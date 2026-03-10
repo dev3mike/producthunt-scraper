@@ -44,6 +44,21 @@ Scrape a specific category by passing its URL:
 bun run index.ts https://www.producthunt.com/categories/ai-chatbots
 ```
 
+### Handling Cloudflare “security verification”
+
+Product Hunt is protected by Cloudflare. Sometimes you’ll see a page like “Just a moment...” or “Performing security verification”. When that happens:
+
+- By default the script starts in **headless** mode.
+- If a Cloudflare challenge is detected while headless:
+  - The script **automatically restarts once with a visible browser window** (`headless: false`).
+  - You’ll see Chrome open to the same category URL.
+  - **Solve the verification in the browser**, then the scraper continues automatically.
+- While a challenge page is shown in the visible browser:
+  - The scraper pauses and asks you (in the terminal) to complete the check.
+  - After solving, **press ENTER in the terminal** and scraping resumes.
+
+Internally, the scraper uses `puppeteer-extra` with the stealth plugin and applies a realistic user agent, viewport, language, and timezone settings to behave more like a normal browser. This **may reduce** how often you are flagged as a bot, but **it does not guarantee** bypassing Cloudflare and **may still violate Product Hunt’s Terms of Service**. Use this tool responsibly and prefer official APIs or exports where available.
+
 ## Output
 
 Results are saved to `results/<category-slug>.json`, for example `results/vibe-coding.json`.
