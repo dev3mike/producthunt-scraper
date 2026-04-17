@@ -1,5 +1,7 @@
 # Product Hunt Category Scraper
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A Puppeteer-based scraper that takes a Product Hunt category URL, collects all products across all pages, then visits each product page to grab its direct website URL. Results are saved as JSON.
 
 ## How it works
